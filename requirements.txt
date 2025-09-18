@@ -1,7 +1,8 @@
+streamlit
 numpy
+opencv-python
 torch
 torchvision
-opencv-python
-streamlit
-Pillow
 tensorflow
+Pillow
+gdown
