@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import torch
 import torch.nn as nn
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 from PIL import Image, ImageEnhance
 import gdown
@@ -99,6 +100,64 @@ class UnetSkipConnectionBlock(nn.Module):
 
 
 # =====================
+# GRAD-CAM FUNCTIONS
+# =====================
+
+def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
+    """Generate Grad-CAM heatmap"""
+    grad_model = tf.keras.models.Model(
+        [model.inputs],
+        [model.get_layer(last_conv_layer_name).output, model.output]
+    )
+
+    with tf.GradientTape() as tape:
+        conv_outputs, predictions = grad_model(image_array)
+        # For regression models, use the first output or modify based on your model's output
+        loss = predictions[0] if len(predictions.shape) > 1 else predictions
+
+    grads = tape.gradient(loss, conv_outputs)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+    conv_outputs = conv_outputs[0]
+    heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_outputs), axis=-1)
+
+    heatmap = tf.maximum(heatmap, 0)
+    heatmap /= (tf.math.reduce_max(heatmap) + tf.keras.backend.epsilon())
+    return heatmap.numpy()
+
+
+def overlay_heatmap(original_img, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
+    """Overlay heatmap on original image"""
+    # Ensure original_img is in correct format
+    if isinstance(original_img, Image.Image):
+        original_img = np.array(original_img)
+    
+    # Resize heatmap to match original image dimensions
+    heatmap_resized = cv2.resize(heatmap, (original_img.shape[1], original_img.shape[0]))
+    heatmap_8u = np.uint8(255 * heatmap_resized)
+
+    # Create 3-channel heatmap and apply colormap
+    heatmap_3ch = cv2.merge([heatmap_8u] * 3)
+    lut = cv2.applyColorMap(np.arange(0, 256, dtype=np.uint8), colormap)
+    reversed_lut = lut[::-1].copy()
+    heatmap_color = cv2.LUT(heatmap_3ch, reversed_lut)
+
+    # Blend original image with heatmap
+    overlay = cv2.addWeighted(original_img, 1 - alpha, heatmap_color, alpha, 0)
+    return overlay
+
+
+def find_last_conv_layer(model):
+    """Find the last convolutional layer in the model"""
+    last_conv_layer_name = None
+    for layer in reversed(model.layers):
+        if 'conv' in layer.name.lower() and len(layer.output_shape) == 4:
+            last_conv_layer_name = layer.name
+            break
+    return last_conv_layer_name
+
+
+# =====================
 # HELPER FUNCTIONS
 # =====================
 
@@ -166,25 +225,64 @@ def main():
 
     if uploaded_file:
         image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="📌 Uploaded Image", width='stretch')
+        st.image(image, caption="📌 Uploaded Image", use_column_width=True)
 
         visualizer = load_visualizer()
         predictor = load_predictor()
 
         # ========== Create Resized Images for Each Model ==========
-        # The Keras 'visualizer' model expects 224x224 images
+        # The Keras 'visualizer' model expects 128x128 images
         img_resized_128 = image.resize((128, 128))
         # The PyTorch 'predictor' U-Net model expects 256x256 images
         img_resized_256 = image.resize((256, 256))
 
-        # ========== Step 1: Visualization (using 224x224 image) ==========
+        # ========== Step 1: Initial Damage Visualization ==========
         st.subheader("Step 1: Initial Damage Visualization")
         input_arr = np.expand_dims(np.array(img_resized_128) / 255.0, axis=0).astype(np.float32)
         vis_output = visualizer.predict(input_arr)
         vis_img = Image.fromarray((vis_output[0] * 255).astype(np.uint8))
-        st.image(vis_img, caption="Initial Damage Visualization", width='stretch')
+        st.image(vis_img, caption="Initial Damage Visualization", use_column_width=True)
 
-        # ========== Step 2: Predictor (using 256x256 image) ==========
+        # ========== Step 1.5: Grad-CAM Visualization ==========
+        st.subheader("Step 1.5: Grad-CAM Heatmap Analysis")
+        
+        try:
+            # Find the last convolutional layer
+            last_conv_layer_name = find_last_conv_layer(visualizer)
+            
+            if last_conv_layer_name:
+                st.info(f"Using layer: {last_conv_layer_name} for Grad-CAM analysis")
+                
+                # Generate Grad-CAM heatmap
+                with st.spinner("Generating Grad-CAM heatmap..."):
+                    heatmap = make_gradcam_heatmap(visualizer, input_arr, last_conv_layer_name)
+                    
+                    # Overlay heatmap on original image
+                    overlay_img = overlay_heatmap(img_resized_128, heatmap)
+                    overlay_pil = Image.fromarray(cv2.cvtColor(overlay_img, cv2.COLOR_BGR2RGB))
+                    
+                    # Display results in columns
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.image(Image.fromarray((heatmap * 255).astype(np.uint8)), 
+                                caption="🔥 Attention Heatmap", 
+                                use_column_width=True)
+                    
+                    with col2:
+                        st.image(overlay_pil, 
+                                caption="🎯 Grad-CAM Overlay", 
+                                use_column_width=True)
+                    
+                    st.success("✅ Grad-CAM analysis shows which areas the model focuses on for damage detection!")
+                    
+            else:
+                st.warning("⚠️ Could not find a suitable convolutional layer for Grad-CAM analysis")
+                
+        except Exception as e:
+            st.error(f"❌ Error generating Grad-CAM: {str(e)}")
+
+        # ========== Step 2: Future Damage Prediction ==========
         st.subheader("Step 2: Future Damage Prediction")
         
         # Prepare tensor for PyTorch model (C, H, W) and rescale to [-1, 1]
@@ -200,9 +298,9 @@ def main():
         pred_numpy = pred_numpy.transpose(1, 2, 0) # Change from (C, H, W) to (H, W, C)
         pred_img = Image.fromarray(np.clip(pred_numpy, 0, 255).astype(np.uint8))
         
-        st.image(pred_img, caption="Predicted Future Damage", width='stretch')
+        st.image(pred_img, caption="Predicted Future Damage", use_column_width=True)
 
-        # ========== Step 3: Quantification ==========
+        # ========== Step 3: Damage Quantification ==========
         st.subheader("Step 3: Damage Quantification")
 
         # Use the correct resized images for consistent comparison
@@ -215,12 +313,27 @@ def main():
         damage_in = quantify_damage(hsl_input_adjusted)
         damage_out = quantify_damage(hsl_output_adjusted)
 
-        st.write(f"📊 **Damage in Input Image:** {damage_in}%")
-        st.write(f"📊 **Damage in Predicted Image:** {damage_out}%")
+        # Display damage scores with better formatting
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Input Image Damage", f"{damage_in}%")
+        with col2:
+            st.metric("Predicted Image Damage", f"{damage_out}%", delta=f"{damage_out - damage_in:.2f}%")
 
-        st.image([hsl_input_adjusted, hsl_output_adjusted], caption=["HSL Adjusted Input", "HSL Adjusted Prediction"], width='stretch')
+        st.image([hsl_input_adjusted, hsl_output_adjusted], 
+                caption=["HSL Adjusted Input", "HSL Adjusted Prediction"], 
+                use_column_width=True)
+
+        # ========== Summary Section ==========
+        st.subheader("📊 Analysis Summary")
+        
+        if damage_out > damage_in:
+            st.error(f"⚠️ Damage is expected to increase by {damage_out - damage_in:.2f}% over time")
+        elif damage_out < damage_in:
+            st.success(f"✅ Damage may decrease by {damage_in - damage_out:.2f}% (possible repair/improvement)")
+        else:
+            st.info("📈 Damage levels are expected to remain stable")
 
 
 if __name__ == "__main__":
     main()
-
