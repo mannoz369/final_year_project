@@ -11,9 +11,9 @@ import os
 # =====================
 # CONFIG
 # =====================
-PREDICTOR_PATH = "prediction.pth"
+PREDICTOR_PATH = "270_net_G.pth"
 VISUALIZER_PATH = "visualizer.h5"
-GOOGLE_DRIVE_URL = "https://drive.google.com/uc?id=YOUR_FILE_ID"  # 👈 replace with actual file ID
+GOOGLE_DRIVE_URL = "https://drive.google.com/file/d/1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b/view?usp=sharing"  # 👈 replace with actual file ID
 
 
 # =====================
@@ -140,3 +140,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
