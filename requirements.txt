@@ -1,0 +1,22 @@
+# Core frameworks
+tensorflow==2.20.0
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+torchaudio==2.7.1+cu118
+
+# Web app
+streamlit==1.49.1
+
+# Image processing
+pillow==11.3.0
+opencv-python==4.12.0.88
+scikit-image==0.25.2
+
+# Math / ML utils
+numpy==2.2.6
+scipy==1.15.3
+scikit-learn==1.7.0
+
+# Optional (visualizations & explanations)
+matplotlib==3.10.3
+lime==0.2.0.1
