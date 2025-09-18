@@ -173,13 +173,13 @@ def main():
 
         # ========== Create Resized Images for Each Model ==========
         # The Keras 'visualizer' model expects 224x224 images
-        img_resized_224 = image.resize((224, 224))
+        img_resized_128 = image.resize((128, 128))
         # The PyTorch 'predictor' U-Net model expects 256x256 images
         img_resized_256 = image.resize((256, 256))
 
         # ========== Step 1: Visualization (using 224x224 image) ==========
         st.subheader("Step 1: Initial Damage Visualization")
-        input_arr = np.expand_dims(np.array(img_resized_224) / 255.0, axis=0).astype(np.float32)
+        input_arr = np.expand_dims(np.array(img_resized_128) / 255.0, axis=0).astype(np.float32)
         vis_output = visualizer.predict(input_arr)
         vis_img = Image.fromarray((vis_output[0] * 255).astype(np.uint8))
         st.image(vis_img, caption="Initial Damage Visualization", width='stretch')
@@ -223,3 +223,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
