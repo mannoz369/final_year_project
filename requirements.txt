@@ -13,7 +13,7 @@ opencv-python-headless==4.9.0.80
 scikit-image==0.25.2
 
 # Math / ML utils
-numpy==2.2.1
+numpy==1.26.4      # ✅ Downgraded for compatibility
 scipy==1.14.1
 scikit-learn==1.5.2
 
