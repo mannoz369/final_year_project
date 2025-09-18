@@ -13,7 +13,8 @@ import os
 # =====================
 PREDICTOR_PATH = "270_net_G.pth"
 VISUALIZER_PATH = "damage_predictor.h5"
-GOOGLE_DRIVE_URL = "https://drive.google.com/file/d/1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b/view?usp=sharing"  # 👈 replace with actual file ID
+# Using the direct download link for gdown is more reliable
+GOOGLE_DRIVE_URL = "https://drive.google.com/uc?id=1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b"
 
 
 # =====================
@@ -31,17 +32,20 @@ def download_predictor_model():
 # =====================
 @st.cache_resource
 def load_visualizer():
-    return load_model(VISUALIZER_PATH)
+    # FIX: Added compile=False to prevent version incompatibility errors when loading the H5 model.
+    return load_model(VISUALIZER_PATH, compile=False)
 
 @st.cache_resource
 def load_predictor():
-    # Example CNN (replace with your actual architecture)
+    # This class defines a classifier, not an image-to-image model.
+    # See the note in Step 2 of the main function.
     class PredictorNet(nn.Module):
         def __init__(self):
             super(PredictorNet, self).__init__()
             self.conv1 = nn.Conv2d(3, 16, 3, padding=1)
             self.pool = nn.MaxPool2d(2, 2)
-            self.fc = nn.Linear(16 * 112 * 112, 2)  # adjust based on your model
+            # This final layer outputs only 2 values, not an image.
+            self.fc = nn.Linear(16 * 112 * 112, 2)
 
         def forward(self, x):
             x = self.pool(torch.relu(self.conv1(x)))
@@ -100,7 +104,8 @@ def main():
 
     if uploaded_file:
         image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="📌 Uploaded Image", use_column_width=True)
+        # FIX: Replaced deprecated 'use_column_width' with 'use_container_width'
+        st.image(image, caption="📌 Uploaded Image", use_container_width=True)
 
         # Load models
         visualizer = load_visualizer()
@@ -112,33 +117,46 @@ def main():
         input_arr = np.expand_dims(np.array(img_resized) / 255.0, axis=0)
         vis_output = visualizer.predict(input_arr)
         vis_img = Image.fromarray((vis_output[0] * 255).astype(np.uint8))
-        st.image(vis_img, caption="Initial Damage Visualization", use_column_width=True)
+        # FIX: Replaced deprecated 'use_column_width' with 'use_container_width'
+        st.image(vis_img, caption="Initial Damage Visualization", use_container_width=True)
 
         # ========== Step 2: Predictor ==========
         st.subheader("Step 2: Future Damage Prediction")
         img_tensor = torch.tensor(np.array(img_resized).transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0) / 255.0
         with torch.no_grad():
             pred_output = predictor(img_tensor)
-        pred_img = pred_output[0].detach().numpy().reshape(224, 224, -1)  # adjust shape if needed
+
+        # IMPORTANT NOTE: The 'PredictorNet' model above outputs a tensor with only 2 values,
+        # not an image. The code below will likely fail because it tries to reshape these 2 values
+        # into a 224x224 image. You need to either:
+        #   1. Change the PredictorNet architecture to an image-to-image model (like a U-Net or Autoencoder).
+        #   2. Change the code below to handle the 2-value output (e.g., display it as text).
+        
+        # This line will likely cause a `ValueError` due to the model's architecture.
+        pred_img = pred_output[0].detach().numpy().reshape(224, 224, -1)
         pred_img = (pred_img - pred_img.min()) / (pred_img.max() - pred_img.min()) * 255
         pred_img = Image.fromarray(pred_img.astype(np.uint8))
-        st.image(pred_img, caption="Predicted Future Damage", use_column_width=True)
+        # FIX: Replaced deprecated 'use_column_width' with 'use_container_width'
+        st.image(pred_img, caption="Predicted Future Damage", use_container_width=True)
 
         # ========== Step 3: Quantification ==========
         st.subheader("Step 3: Damage Quantification")
-        hsl_input = adjust_hsl(image, 45, 1.5, 1.2)
-        hsl_output = adjust_hsl(pred_img, 45, 1.5, 1.2)
+        # Ensure the images are RGB before passing to HSL functions
+        hsl_input = image.resize((224, 224)).convert("RGB")
+        hsl_output = pred_img.convert("RGB")
 
-        damage_in = quantify_damage(hsl_input)
-        damage_out = quantify_damage(hsl_output)
+        hsl_input_adjusted = adjust_hsl(hsl_input, 45, 1.5, 1.2)
+        hsl_output_adjusted = adjust_hsl(hsl_output, 45, 1.5, 1.2)
+
+        damage_in = quantify_damage(hsl_input_adjusted)
+        damage_out = quantify_damage(hsl_output_adjusted)
 
         st.write(f"📊 **Damage in Input Image:** {damage_in}%")
         st.write(f"📊 **Damage in Predicted Image:** {damage_out}%")
 
-        st.image([hsl_input, hsl_output], caption=["HSL Adjusted Input", "HSL Adjusted Prediction"], use_column_width=True)
+        # FIX: Replaced deprecated 'use_column_width' with 'use_container_width'
+        st.image([hsl_input_adjusted, hsl_output_adjusted], caption=["HSL Adjusted Input", "HSL Adjusted Prediction"], use_container_width=True)
 
 
 if __name__ == "__main__":
     main()
-
-
