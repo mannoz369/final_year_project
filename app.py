@@ -105,25 +105,39 @@ class UnetSkipConnectionBlock(nn.Module):
 
 def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     """Generate Grad-CAM heatmap"""
-    grad_model = tf.keras.models.Model(
-        [model.inputs],
-        [model.get_layer(last_conv_layer_name).output, model.output]
-    )
+    try:
+        grad_model = tf.keras.models.Model(
+            [model.inputs],
+            [model.get_layer(last_conv_layer_name).output, model.output]
+        )
 
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(image_array)
-        # For regression models, use the first output or modify based on your model's output
-        loss = predictions[0] if len(predictions.shape) > 1 else predictions
+        with tf.GradientTape() as tape:
+            conv_outputs, predictions = grad_model(image_array)
+            # Handle different output shapes
+            if len(predictions.shape) > 2:
+                loss = tf.reduce_mean(predictions)
+            elif len(predictions.shape) == 2:
+                loss = tf.reduce_mean(predictions, axis=1)
+            else:
+                loss = predictions
 
-    grads = tape.gradient(loss, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        grads = tape.gradient(loss, conv_outputs)
+        if grads is None:
+            raise ValueError("No gradients found - check if the model is trainable")
+            
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-    conv_outputs = conv_outputs[0]
-    heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_outputs), axis=-1)
+        conv_outputs = conv_outputs[0]
+        heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_outputs), axis=-1)
 
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap /= (tf.math.reduce_max(heatmap) + tf.keras.backend.epsilon())
-    return heatmap.numpy()
+        heatmap = tf.maximum(heatmap, 0)
+        max_val = tf.math.reduce_max(heatmap)
+        if max_val > 0:
+            heatmap = heatmap / max_val
+        
+        return heatmap.numpy()
+    except Exception as e:
+        raise ValueError(f"Error in Grad-CAM generation: {str(e)}")
 
 
 def overlay_heatmap(original_img, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
@@ -151,7 +165,8 @@ def find_last_conv_layer(model):
     """Find the last convolutional layer in the model"""
     last_conv_layer_name = None
     for layer in reversed(model.layers):
-        if 'conv' in layer.name.lower() and len(layer.output_shape) == 4:
+        if hasattr(layer, 'filters') and 'conv' in layer.name.lower():
+            # This is a Conv2D layer
             last_conv_layer_name = layer.name
             break
     return last_conv_layer_name
@@ -278,9 +293,34 @@ def main():
                     
             else:
                 st.warning("⚠️ Could not find a suitable convolutional layer for Grad-CAM analysis")
+                # Try to list available layers for debugging
+                layer_names = [layer.name for layer in visualizer.layers if hasattr(layer, 'filters')]
+                if layer_names:
+                    st.info(f"Available Conv layers: {', '.join(layer_names)}")
+                    # Use the last available conv layer
+                    last_conv_layer_name = layer_names[-1]
+                    st.info(f"Using fallback layer: {last_conv_layer_name}")
+                    
+                    with st.spinner("Generating Grad-CAM heatmap with fallback layer..."):
+                        heatmap = make_gradcam_heatmap(visualizer, input_arr, last_conv_layer_name)
+                        overlay_img = overlay_heatmap(img_resized_128, heatmap)
+                        overlay_pil = Image.fromarray(cv2.cvtColor(overlay_img, cv2.COLOR_BGR2RGB))
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.image(Image.fromarray((heatmap * 255).astype(np.uint8)), 
+                                    caption="🔥 Attention Heatmap", 
+                                    use_column_width=True)
+                        with col2:
+                            st.image(overlay_pil, 
+                                    caption="🎯 Grad-CAM Overlay", 
+                                    use_column_width=True)
                 
         except Exception as e:
             st.error(f"❌ Error generating Grad-CAM: {str(e)}")
+            # Show model architecture for debugging
+            if st.checkbox("Show model layers for debugging"):
+                st.code([f"{i}: {layer.name} - {type(layer).__name__}" for i, layer in enumerate(visualizer.layers)])
 
         # ========== Step 2: Future Damage Prediction ==========
         st.subheader("Step 2: Future Damage Prediction")
