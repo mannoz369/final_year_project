@@ -26,27 +26,16 @@ class UnetGenerator(nn.Module):
     """Create a Unet-based generator"""
 
     def __init__(self, input_nc, output_nc, num_downs, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False):
-        """Construct a Unet generator
-        Parameters:
-            input_nc (int)  -- the number of channels in input images
-            output_nc (int) -- the number of channels in output images
-            num_downs (int) -- the number of downsamplings in UNet. For example, # if |num_downs| == 7,
-                                image of size 128x128 will become of size 1x1 # at the bottleneck
-            ngf (int)       -- the number of filters in the last conv layer
-            norm_layer      -- normalization layer
-        We construct the U-Net from the innermost layer to the outermost layer.
-        It is a recursive process.
-        """
+        """Construct a Unet generator"""
         super(UnetGenerator, self).__init__()
         # construct unet structure
-        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)  # add the innermost layer
-        for i in range(num_downs - 5):          # add intermediate layers with ngf * 8 filters
+        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)
+        for i in range(num_downs - 5):
             unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
-        # gradually reduce the number of filters from ngf * 8 to ngf
         unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)  # add the outermost layer
+        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)
 
     def forward(self, input):
         """Standard forward"""
@@ -54,24 +43,11 @@ class UnetGenerator(nn.Module):
 
 
 class UnetSkipConnectionBlock(nn.Module):
-    """Defines the Unet submodule with skip connection.
-        X -------------------identity----------------------
-        |-- downsampling -- |submodule| -- upsampling --|
-    """
+    """Defines the Unet submodule with skip connection."""
 
     def __init__(self, outer_nc, inner_nc, input_nc=None,
                  submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False):
-        """Construct a Unet submodule with skip connections.
-        Parameters:
-            outer_nc (int) -- the number of filters in the outer conv layer
-            inner_nc (int) -- the number of filters in the inner conv layer
-            input_nc (int) -- the number of channels in input images/features
-            submodule (UnetSkipConnectionBlock) -- previously defined submodules
-            outermost (bool)    -- if this module is the outermost module
-            innermost (bool)    -- if this module is the innermost module
-            norm_layer          -- normalization layer
-            use_dropout (bool)  -- if use dropout layers.
-        """
+        """Construct a Unet submodule with skip connections."""
         super(UnetSkipConnectionBlock, self).__init__()
         self.outermost = outermost
         if type(norm_layer) == functools.partial:
@@ -135,13 +111,13 @@ def download_predictor_model():
 
 @st.cache_resource
 def load_visualizer():
+    # Load Keras model without its training optimizer to prevent version errors
     return load_model(VISUALIZER_PATH, compile=False)
 
 
 @st.cache_resource
 def load_predictor():
-    # Standard parameters for a 256x256 pix2pix model.
-    # Adjust if your training parameters were different.
+    # Initialize the correct UnetGenerator architecture
     model = UnetGenerator(input_nc=3, output_nc=3, num_downs=8, norm_layer=nn.BatchNorm2d)
     
     model.load_state_dict(torch.load(PREDICTOR_PATH, map_location=torch.device("cpu")))
@@ -160,7 +136,7 @@ def adjust_hue(image, hue_degrees):
     return image_hsv.convert("RGB")
 
 def adjust_saturation(image, saturation_factor):
-    return ImageEnhance.Color(image).enhance( saturation_factor)
+    return ImageEnhance.Color(image).enhance(saturation_factor)
 
 def adjust_luminosity(image, brightness_factor):
     return ImageEnhance.Brightness(image).enhance(brightness_factor)
@@ -195,19 +171,24 @@ def main():
         visualizer = load_visualizer()
         predictor = load_predictor()
 
-        # ========== Step 1: Visualization ==========
+        # ========== Create Resized Images for Each Model ==========
+        # The Keras 'visualizer' model expects 224x224 images
+        img_resized_224 = image.resize((224, 224))
+        # The PyTorch 'predictor' U-Net model expects 256x256 images
+        img_resized_256 = image.resize((256, 256))
+
+        # ========== Step 1: Visualization (using 224x224 image) ==========
         st.subheader("Step 1: Initial Damage Visualization")
-        img_resized = image.resize((256, 256)) # U-Net default is 256x256
-        input_arr = np.expand_dims(np.array(img_resized) / 255.0, axis=0).astype(np.float32)
+        input_arr = np.expand_dims(np.array(img_resized_224) / 255.0, axis=0).astype(np.float32)
         vis_output = visualizer.predict(input_arr)
         vis_img = Image.fromarray((vis_output[0] * 255).astype(np.uint8))
         st.image(vis_img, caption="Initial Damage Visualization", width='stretch')
 
-        # ========== Step 2: Predictor ==========
+        # ========== Step 2: Predictor (using 256x256 image) ==========
         st.subheader("Step 2: Future Damage Prediction")
         
         # Prepare tensor for PyTorch model (C, H, W) and rescale to [-1, 1]
-        img_tensor = torch.tensor(np.array(img_resized).transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0)
+        img_tensor = torch.tensor(np.array(img_resized_256).transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0)
         img_tensor = (img_tensor / 127.5) - 1.0
 
         with torch.no_grad():
@@ -224,8 +205,8 @@ def main():
         # ========== Step 3: Quantification ==========
         st.subheader("Step 3: Damage Quantification")
 
-        # Use the already resized/processed images for consistency
-        hsl_input = img_resized.convert("RGB")
+        # Use the correct resized images for consistent comparison
+        hsl_input = img_resized_256.convert("RGB")
         hsl_output = pred_img.convert("RGB")
 
         hsl_input_adjusted = adjust_hsl(hsl_input, 45, 1.5, 1.2)
