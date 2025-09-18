@@ -106,6 +106,10 @@ class UnetSkipConnectionBlock(nn.Module):
 def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     """Generate Grad-CAM heatmap"""
     try:
+        # First, ensure the model has been called to define outputs
+        _ = model(image_array)
+        
+        # Create the grad model
         grad_model = tf.keras.models.Model(
             [model.inputs],
             [model.get_layer(last_conv_layer_name).output, model.output]
@@ -113,17 +117,20 @@ def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
 
         with tf.GradientTape() as tape:
             conv_outputs, predictions = grad_model(image_array)
-            # Handle different output shapes
-            if len(predictions.shape) > 2:
+            
+            # Handle different prediction shapes
+            if len(predictions.shape) == 4:  # (batch, height, width, channels)
                 loss = tf.reduce_mean(predictions)
-            elif len(predictions.shape) == 2:
+            elif len(predictions.shape) == 2:  # (batch, features)
                 loss = tf.reduce_mean(predictions, axis=1)
-            else:
+            elif len(predictions.shape) == 1:  # (batch,)
                 loss = predictions
+            else:
+                loss = tf.reduce_mean(predictions)
 
         grads = tape.gradient(loss, conv_outputs)
         if grads is None:
-            raise ValueError("No gradients found - check if the model is trainable")
+            raise ValueError("No gradients found - the model may not be differentiable")
             
         pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
@@ -134,6 +141,8 @@ def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
         max_val = tf.math.reduce_max(heatmap)
         if max_val > 0:
             heatmap = heatmap / max_val
+        else:
+            heatmap = tf.zeros_like(heatmap)
         
         return heatmap.numpy()
     except Exception as e:
@@ -262,6 +271,9 @@ def main():
         st.subheader("Step 1.5: Grad-CAM Heatmap Analysis")
         
         try:
+            # Ensure the model is properly initialized by calling it once
+            _ = visualizer(input_arr)
+            
             # Find the last convolutional layer
             last_conv_layer_name = find_last_conv_layer(visualizer)
             
@@ -320,7 +332,14 @@ def main():
             st.error(f"❌ Error generating Grad-CAM: {str(e)}")
             # Show model architecture for debugging
             if st.checkbox("Show model layers for debugging"):
-                st.code([f"{i}: {layer.name} - {type(layer).__name__}" for i, layer in enumerate(visualizer.layers)])
+                layer_info = []
+                for i, layer in enumerate(visualizer.layers):
+                    try:
+                        layer_type = type(layer).__name__
+                        layer_info.append(f"{i}: {layer.name} - {layer_type}")
+                    except:
+                        layer_info.append(f"{i}: {layer.name} - Unknown")
+                st.code("\n".join(layer_info))
 
         # ========== Step 2: Future Damage Prediction ==========
         st.subheader("Step 2: Future Damage Prediction")
