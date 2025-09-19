@@ -32,16 +32,8 @@ def load_models(pth_path, h5_path):
     # Load PyTorch model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     try:
-        # Assuming the .pth file is a state_dict
-        # If it's a full model, use: model_pth = torch.load(pth_path, map_location=device)
-        # --- IMPORTANT: Define your PyTorch model architecture here ---
-        # Example: model_pth = YourModelClass()
-        # model_pth.load_state_dict(torch.load(pth_path, map_location=device))
-        
-        # As a placeholder, we'll assume a pre-trained model structure.
-        # YOU MUST REPLACE THIS with your actual model loading logic.
+        # --- IMPORTANT: You should have replaced this with your model loading logic ---
         model_pth = torch.hub.load('pytorch/vision:v0.10.0', 'deeplabv3_resnet50', pretrained=True)
-        # In a real scenario, you'd load your state dict into your custom model class.
         st.info("Using a placeholder PyTorch model. Replace with your model architecture.", icon="ℹ️")
 
     except Exception as e:
@@ -51,8 +43,10 @@ def load_models(pth_path, h5_path):
     model_pth.to(device)
     model_pth.eval()
 
-    # Load TensorFlow model
-    model_tf = tf.keras.models.load_model(h5_path)
+    # Load TensorFlow model, skipping the compilation
+    # This avoids errors from version mismatches in optimizer/loss functions
+    model_tf = tf.keras.models.load_model(h5_path, compile=False)
+    
     return model_pth, model_tf
 
 # --- Image Processing Functions (from your files) ---
@@ -219,3 +213,4 @@ else:
                 st.success("Analysis Complete!")
     else:
         st.info("Please upload an image to begin the analysis.")
+
