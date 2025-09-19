@@ -43,8 +43,7 @@ def load_models(pth_path, h5_path):
     model_pth.to(device)
     model_pth.eval()
 
-    # Load TensorFlow model, skipping the compilation
-    # This avoids errors from version mismatches in optimizer/loss functions
+    # FIX 1: Load TensorFlow model, skipping the compilation to avoid version errors.
     model_tf = tf.keras.models.load_model(h5_path, compile=False)
     
     return model_pth, model_tf
@@ -54,7 +53,6 @@ def load_models(pth_path, h5_path):
 # HSL functions from hsl.py
 def adjust_hsl(image, hue_deg, sat_fac, bright_fac):
     """Adjusts Hue, Saturation, and Luminosity of a PIL Image."""
-    # Hue
     image_hsv = image.convert("HSV")
     h, s, v = image_hsv.split()
     h = np.array(h, dtype=np.uint8)
@@ -63,11 +61,7 @@ def adjust_hsl(image, hue_deg, sat_fac, bright_fac):
     h = Image.fromarray(h.astype(np.uint8))
     image_hsv = Image.merge("HSV", (h, s, v))
     image = image_hsv.convert("RGB")
-    
-    # Saturation
     image = ImageEnhance.Color(image).enhance(sat_fac)
-    
-    # Luminosity
     image = ImageEnhance.Brightness(image).enhance(bright_fac)
     return image
 
@@ -85,8 +79,7 @@ def quantify_black_percentage(pil_image):
 def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     """Generates the Grad-CAM heatmap."""
     
-    # By calling the model once, we trigger its build process, which allows 
-    # us to access model.inputs and model.output in the next step.
+    # FIX 3: Call the model once to build it. This defines model.inputs and model.output.
     model(image_array)
 
     grad_model = tf.keras.models.Model(
@@ -95,7 +88,6 @@ def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     )
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(image_array)
-        # Assuming regression, use the single output neuron
         loss = predictions[:, 0]
 
     grads = tape.gradient(loss, conv_outputs)
@@ -110,7 +102,6 @@ def overlay_heatmap(original_img, heatmap, alpha=0.5):
     heatmap_resized = cv2.resize(heatmap, (original_img.shape[1], original_img.shape[0]))
     heatmap_8u = np.uint8(255 * heatmap_resized)
     heatmap_color = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
-    
     original_img_bgr = cv2.cvtColor(original_img, cv2.COLOR_RGB2BGR)
     overlay = cv2.addWeighted(original_img_bgr, 1 - alpha, heatmap_color, alpha, 0)
     return cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
@@ -123,7 +114,6 @@ st.sidebar.header("⚙️ Controls")
 uploaded_file = st.sidebar.file_uploader(
     "Upload an image", type=["png", "jpg", "jpeg"]
 )
-
 st.sidebar.header("🎨 HSL Adjustment")
 hue_degrees = st.sidebar.slider("Hue (degrees)", 0, 360, 45)
 saturation_factor = st.sidebar.slider("Saturation", 0.0, 3.0, 1.5, 0.1)
@@ -131,58 +121,44 @@ brightness_factor = st.sidebar.slider("Brightness", 0.0, 3.0, 1.2, 0.1)
 
 # --- Model Loading ---
 # !! IMPORTANT !! Replace with your actual Google Drive File IDs
-PTH_MODEL_ID = '1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b' 
+PTH_MODEL_ID = '1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b'
 H5_MODEL_ID = '1yJ88NnHUicxX14tTb6I_L7BZLZF4Oo9m' 
 
-pth_model_path = download_model(PTH_MODEL_ID, "270_net_G.pth")
+pth_model_path = download_model(PTH_MODEL_ID, "damage_prediction_model.pth")
 h5_model_path = download_model(H5_MODEL_ID, "damage_predictor.h5")
-
 model_pth, model_tf = load_models(pth_model_path, h5_model_path)
 
 if model_pth is None or model_tf is None:
     st.error("Models could not be loaded. Please check the GDrive IDs and model files.")
 else:
-    # --- Main Processing Logic ---
     if uploaded_file is not None:
-        # Load and display the original image
         original_image = Image.open(uploaded_file).convert("RGB")
-        
         st.header("1. Input Image")
-        st.image(original_image, caption="Original Uploaded Image", use_column_width=True)
+        st.image(original_image, caption="Original Uploaded Image", use_container_width=True)
         
         if st.button("🚀 Analyze Damage", use_container_width=True):
             with st.spinner("Analyzing... This may take a moment."):
-                
-                # --- 2. Future Damage Prediction (.pth model) ---
                 st.header("2. Predicted Future Damage")
-                # Define preprocessing transforms for your PyTorch model
                 preprocess_pth = transforms.Compose([
-                    transforms.Resize((256, 256)), # Match your model's input size
+                    transforms.Resize((256, 256)),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                 ])
                 input_tensor = preprocess_pth(original_image).unsqueeze(0)
-                
                 with torch.no_grad():
                     output = model_pth(input_tensor)['out'][0]
-                # Convert output tensor to a displayable PIL image
                 output_predictions = output.argmax(0)
                 predicted_mask = output_predictions.byte().cpu().numpy()
                 predicted_image = Image.fromarray(predicted_mask).convert("RGB")
-                
-                st.image(predicted_image, caption="Model Prediction Output", use_column_width=True)
+                st.image(predicted_image, caption="Model Prediction Output", use_container_width=True)
 
-              # --- 3. Grad-CAM Visualization (.h5 model) ---
                 st.header("3. Damage Area Visualization (Grad-CAM)")
-                
-                # Preprocess for TF model
                 img_array_tf = np.array(original_image.resize((128, 128))) / 255.0
                 img_array_tf = np.expand_dims(img_array_tf, axis=0)
                 
-                # Find last conv layer name automatically
                 last_conv_layer_name = None
                 for layer in reversed(model_tf.layers):
-                    # Use layer.output.shape instead of layer.output_shape
+                    # FIX 2: Use layer.output.shape instead of layer.output_shape.
                     if 'conv' in layer.name and len(layer.output.shape) == 4:
                         last_conv_layer_name = layer.name
                         break
@@ -190,21 +166,18 @@ else:
                 if last_conv_layer_name:
                     heatmap = make_gradcam_heatmap(model_tf, img_array_tf, last_conv_layer_name)
                     gradcam_image = overlay_heatmap(np.array(original_image), heatmap)
-                    st.image(gradcam_image, caption=f"Grad-CAM on layer: '{last_conv_layer_name}'", use_column_width=True)
+                    st.image(gradcam_image, caption=f"Grad-CAM on layer: '{last_conv_layer_name}'", use_container_width=True)
                 else:
                     st.warning("Could not find a suitable convolutional layer for Grad-CAM.")
 
-                # --- 4. HSL and Percentage Analysis ---
                 st.header("4. HSL Analysis & Damage Quantification")
                 col1, col2 = st.columns(2)
-                
                 with col1:
                     st.subheader("Original (HSL Adjusted)")
                     original_hsl = adjust_hsl(original_image, hue_degrees, saturation_factor, brightness_factor)
                     st.image(original_hsl, caption="Adjusted Input Image")
                     percent_original = quantify_black_percentage(original_hsl)
                     st.metric(label="Initial Damage Area (%)", value=f"{percent_original:.2f}%")
-
                 with col2:
                     st.subheader("Prediction (HSL Adjusted)")
                     predicted_hsl = adjust_hsl(predicted_image, hue_degrees, saturation_factor, brightness_factor)
@@ -219,6 +192,3 @@ else:
                 st.success("Analysis Complete!")
     else:
         st.info("Please upload an image to begin the analysis.")
-
-
-
