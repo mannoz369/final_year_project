@@ -169,8 +169,11 @@ def preprocess_for_gradcam(pil_img, model_input_size=(128, 128)):
 
 def find_last_conv_layer(model):
     """Finds the name of the last convolutional layer for Grad-CAM."""
+    # Iterate backwards through the layers of the model
     for layer in reversed(model.layers):
-        if 'conv' in layer.name and len(layer.output_shape) == 4:
+        # Check if the layer name contains 'conv' and it has a 4D output
+        # A more robust way to check shape is via layer.output.shape
+        if 'conv' in layer.name and len(layer.output.shape) == 4:
             return layer.name
     return None
 
@@ -322,4 +325,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
