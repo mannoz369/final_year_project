@@ -1,87 +1,128 @@
 import streamlit as st
-import torch
-import tensorflow as tf
-from torchvision import transforms
-from PIL import Image, ImageEnhance
 import numpy as np
 import cv2
-import os
+import torch
+import torch.nn as nn
+import tensorflow as tf  # Added for Grad-CAM
+from tensorflow.keras.models import load_model
+from PIL import Image, ImageEnhance
 import gdown
+import os
+import functools
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="Future Damage Prediction & Visualization",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# =====================
+# CONFIG
+# =====================
+PREDICTOR_PATH = "270_net_G.pth"
+VISUALIZER_PATH = "damage_predictor.h5"
+# This URL should point to your 270_net_G.pth file
+GOOGLE_DRIVE_ID = "1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b" 
 
-# --- Model & File Management ---
+
+# =====================
+# PIX2PIX MODEL ARCHITECTURE
+# =====================
+
+class UnetGenerator(nn.Module):
+    """Create a Unet-based generator"""
+
+    def __init__(self, input_nc, output_nc, num_downs, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False):
+        """Construct a Unet generator"""
+        super(UnetGenerator, self).__init__()
+        # construct unet structure
+        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)
+        for i in range(num_downs - 5):
+            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
+        unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
+        unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
+        unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
+        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)
+
+    def forward(self, input):
+        """Standard forward"""
+        return self.model(input)
+
+
+class UnetSkipConnectionBlock(nn.Module):
+    """Defines the Unet submodule with skip connection."""
+
+    def __init__(self, outer_nc, inner_nc, input_nc=None,
+                 submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False):
+        """Construct a Unet submodule with skip connections."""
+        super(UnetSkipConnectionBlock, self).__init__()
+        self.outermost = outermost
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+        if input_nc is None:
+            input_nc = outer_nc
+        downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
+                             stride=2, padding=1, bias=use_bias)
+        downrelu = nn.LeakyReLU(0.2, True)
+        downnorm = norm_layer(inner_nc)
+        uprelu = nn.ReLU(True)
+        upnorm = norm_layer(outer_nc)
+
+        if outermost:
+            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
+                                        kernel_size=4, stride=2,
+                                        padding=1)
+            down = [downconv]
+            up = [uprelu, upconv, nn.Tanh()]
+            model = down + [submodule] + up
+        elif innermost:
+            upconv = nn.ConvTranspose2d(inner_nc, outer_nc,
+                                        kernel_size=4, stride=2,
+                                        padding=1, bias=use_bias)
+            down = [downrelu, downconv]
+            up = [uprelu, upconv, upnorm]
+            model = down + up
+        else:
+            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
+                                        kernel_size=4, stride=2,
+                                        padding=1, bias=use_bias)
+            down = [downrelu, downconv, downnorm]
+            up = [uprelu, upconv, upnorm]
+
+            if use_dropout:
+                model = down + [submodule] + up + [nn.Dropout(0.5)]
+            else:
+                model = down + [submodule] + up
+
+        self.model = nn.Sequential(*model)
+
+    def forward(self, x):
+        if self.outermost:
+            return self.model(x)
+        else:  # add skip connections
+            return torch.cat([x, self.model(x)], 1)
+
+
+# =====================
+# HELPER FUNCTIONS
+# =====================
+
+def download_predictor_model():
+    if not os.path.exists(PREDICTOR_PATH):
+        with st.spinner("📥 Downloading predictor model from Google Drive..."):
+            gdown.download(id=GOOGLE_DRIVE_ID, output=PREDICTOR_PATH, quiet=False)
+        st.success("✅ Predictor model downloaded successfully!")
 
 @st.cache_resource
-def download_model(gdrive_id, output_path):
-    """Downloads a file from Google Drive."""
-    if not os.path.exists(output_path):
-        with st.spinner(f"Downloading model: {os.path.basename(output_path)}..."):
-            gdown.download(id=gdrive_id, output=output_path, quiet=False)
-    return output_path
+def load_visualizer():
+    return load_model(VISUALIZER_PATH, compile=False)
 
 @st.cache_resource
-def load_models(pth_path, h5_path):
-    """Loads the PyTorch and TensorFlow models into memory."""
-    # Load PyTorch model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    try:
-        # --- IMPORTANT: You should have replaced this with your model loading logic ---
-        model_pth = torch.hub.load('pytorch/vision:v0.10.0', 'deeplabv3_resnet50', pretrained=True)
-        st.info("Using a placeholder PyTorch model. Replace with your model architecture.", icon="ℹ️")
+def load_predictor():
+    model = UnetGenerator(input_nc=3, output_nc=3, num_downs=8, norm_layer=nn.BatchNorm2d)
+    model.load_state_dict(torch.load(PREDICTOR_PATH, map_location=torch.device("cpu")))
+    model.eval()
+    return model
 
-    except Exception as e:
-        st.error(f"Error loading PyTorch model: {e}. Please ensure your model architecture is defined in the script.")
-        return None, None
-        
-    model_pth.to(device)
-    model_pth.eval()
-
-    # FIX 1: Load TensorFlow model, skipping the compilation to avoid version errors.
-    model_tf = tf.keras.models.load_model(h5_path, compile=False)
-    
-    return model_pth, model_tf
-
-# --- Image Processing Functions (from your files) ---
-
-# HSL functions from hsl.py
-def adjust_hsl(image, hue_deg, sat_fac, bright_fac):
-    """Adjusts Hue, Saturation, and Luminosity of a PIL Image."""
-    image_hsv = image.convert("HSV")
-    h, s, v = image_hsv.split()
-    h = np.array(h, dtype=np.uint8)
-    hue_shift = int((hue_deg / 360) * 255)
-    h = (h.astype(int) + hue_shift) % 256
-    h = Image.fromarray(h.astype(np.uint8))
-    image_hsv = Image.merge("HSV", (h, s, v))
-    image = image_hsv.convert("RGB")
-    image = ImageEnhance.Color(image).enhance(sat_fac)
-    image = ImageEnhance.Brightness(image).enhance(bright_fac)
-    return image
-
-# Percentage calculation from percent.py
-def quantify_black_percentage(pil_image):
-    """Calculates the percentage of black pixels in a PIL image."""
-    image_cv = np.array(pil_image.convert('RGB'))
-    gray_image = cv2.cvtColor(image_cv, cv2.COLOR_RGB2GRAY)
-    _, black_mask = cv2.threshold(gray_image, 50, 255, cv2.THRESH_BINARY_INV)
-    black_pixels = np.sum(black_mask == 255)
-    total_pixels = image_cv.shape[0] * image_cv.shape[1]
-    return (black_pixels / total_pixels) * 100
-
-# Grad-CAM functions from gradcam3.py
+# --- Grad-CAM Functions (NEW) ---
 def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
-    """Generates the Grad-CAM heatmap."""
-    
-    # FIX 3: Call the model once to build it. This defines model.inputs and model.output.
-    model(image_array)
-
+    model(image_array) # Build the model by calling it
     grad_model = tf.keras.models.Model(
         [model.inputs],
         [model.get_layer(last_conv_layer_name).output, model.output]
@@ -89,7 +130,6 @@ def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(image_array)
         loss = predictions[:, 0]
-
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
     heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_outputs[0]), axis=-1)
@@ -97,98 +137,100 @@ def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     heatmap /= (tf.math.reduce_max(heatmap) + tf.keras.backend.epsilon())
     return heatmap.numpy()
 
-def overlay_heatmap(original_img, heatmap, alpha=0.5):
-    """Overlays the heatmap on the original image."""
+def overlay_heatmap(original_img, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
     heatmap_resized = cv2.resize(heatmap, (original_img.shape[1], original_img.shape[0]))
     heatmap_8u = np.uint8(255 * heatmap_resized)
-    heatmap_color = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
-    original_img_bgr = cv2.cvtColor(original_img, cv2.COLOR_RGB2BGR)
-    overlay = cv2.addWeighted(original_img_bgr, 1 - alpha, heatmap_color, alpha, 0)
-    return cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+    heatmap_color = cv2.applyColorMap(heatmap_8u, colormap)
+    overlay = cv2.addWeighted(original_img, 1 - alpha, heatmap_color, alpha, 0)
+    return overlay
 
-# --- Main App ---
-st.title("Future Damage Prediction & Analysis Engine 🔬")
+# --- HSL and Quantification Functions ---
+def adjust_hsl(image, hue_deg, sat_fac, bright_fac):
+    image_hsv = image.convert("HSV")
+    h, s, v = image_hsv.split()
+    h = np.array(h, dtype=np.uint8)
+    hue_shift = int((hue_deg / 360) * 255)
+    h = (h.astype(int) + hue_shift) % 256
+    h = np.clip(h, 0, 255).astype(np.uint8)
+    image_hsv = Image.merge("HSV", (Image.fromarray(h), s, v))
+    image = image_hsv.convert("RGB")
+    image = ImageEnhance.Color(image).enhance(sat_fac)
+    image = ImageEnhance.Brightness(image).enhance(bright_fac)
+    return image
 
-# --- Sidebar Controls ---
-st.sidebar.header("⚙️ Controls")
-uploaded_file = st.sidebar.file_uploader(
-    "Upload an image", type=["png", "jpg", "jpeg"]
-)
-st.sidebar.header("🎨 HSL Adjustment")
-hue_degrees = st.sidebar.slider("Hue (degrees)", 0, 360, 45)
-saturation_factor = st.sidebar.slider("Saturation", 0.0, 3.0, 1.5, 0.1)
-brightness_factor = st.sidebar.slider("Brightness", 0.0, 3.0, 1.2, 0.1)
+def quantify_damage(img):
+    gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+    damage_score = np.mean(gray) / 255.0
+    return round(damage_score * 100, 2)
 
-# --- Model Loading ---
-# !! IMPORTANT !! Replace with your actual Google Drive File IDs
-PTH_MODEL_ID = '1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b'
-H5_MODEL_ID = '1yJ88NnHUicxX14tTb6I_L7BZLZF4Oo9m' 
+# =====================
+# STREAMLIT APP
+# =====================
+def main():
+    st.title("🔧 Damage Prediction & Visualization App")
+    st.write("Upload an image to visualize initial damage, predict future damage, and quantify it.")
+    download_predictor_model()
+    uploaded_file = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
 
-pth_model_path = download_model(PTH_MODEL_ID, "damage_prediction_model.pth")
-h5_model_path = download_model(H5_MODEL_ID, "damage_predictor.h5")
-model_pth, model_tf = load_models(pth_model_path, h5_model_path)
+    if uploaded_file:
+        image = Image.open(uploaded_file).convert("RGB")
+        st.image(image, caption="📌 Uploaded Image", use_container_width=True)
 
-if model_pth is None or model_tf is None:
-    st.error("Models could not be loaded. Please check the GDrive IDs and model files.")
-else:
-    if uploaded_file is not None:
-        original_image = Image.open(uploaded_file).convert("RGB")
-        st.header("1. Input Image")
-        st.image(original_image, caption="Original Uploaded Image", use_container_width=True)
+        visualizer = load_visualizer()
+        predictor = load_predictor()
+
+        img_resized_128 = image.resize((128, 128))
+        img_resized_256 = image.resize((256, 256))
+
+        # ========== Step 1: Grad-CAM Visualization (REPLACED) ==========
+        st.subheader("Step 1: Grad-CAM Damage Visualization")
+        input_arr = np.expand_dims(np.array(img_resized_128) / 255.0, axis=0).astype(np.float32)
         
-        if st.button("🚀 Analyze Damage", use_container_width=True):
-            with st.spinner("Analyzing... This may take a moment."):
-                st.header("2. Predicted Future Damage")
-                preprocess_pth = transforms.Compose([
-                    transforms.Resize((256, 256)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ])
-                input_tensor = preprocess_pth(original_image).unsqueeze(0)
-                with torch.no_grad():
-                    output = model_pth(input_tensor)['out'][0]
-                output_predictions = output.argmax(0)
-                predicted_mask = output_predictions.byte().cpu().numpy()
-                predicted_image = Image.fromarray(predicted_mask).convert("RGB")
-                st.image(predicted_image, caption="Model Prediction Output", use_container_width=True)
+        last_conv_layer_name = None
+        for layer in reversed(visualizer.layers):
+            if 'conv' in layer.name and hasattr(layer, 'output') and len(layer.output.shape) == 4:
+                last_conv_layer_name = layer.name
+                break
+        
+        if last_conv_layer_name:
+            heatmap = make_gradcam_heatmap(visualizer, input_arr, last_conv_layer_name)
+            gradcam_image = overlay_heatmap(np.array(img_resized_128), heatmap)
+            gradcam_image_rgb = cv2.cvtColor(gradcam_image, cv2.COLOR_BGR2RGB) # Ensure correct color
+            st.image(gradcam_image_rgb, caption=f"Grad-CAM Visualization (Layer: {last_conv_layer_name})", use_container_width=True)
+        else:
+            st.warning("Could not find a suitable convolutional layer for Grad-CAM.")
 
-                st.header("3. Damage Area Visualization (Grad-CAM)")
-                img_array_tf = np.array(original_image.resize((128, 128))) / 255.0
-                img_array_tf = np.expand_dims(img_array_tf, axis=0)
-                
-                last_conv_layer_name = None
-                for layer in reversed(model_tf.layers):
-                    # FIX 2: Use layer.output.shape instead of layer.output_shape.
-                    if 'conv' in layer.name and len(layer.output.shape) == 4:
-                        last_conv_layer_name = layer.name
-                        break
-                
-                if last_conv_layer_name:
-                    heatmap = make_gradcam_heatmap(model_tf, img_array_tf, last_conv_layer_name)
-                    gradcam_image = overlay_heatmap(np.array(original_image), heatmap)
-                    st.image(gradcam_image, caption=f"Grad-CAM on layer: '{last_conv_layer_name}'", use_container_width=True)
-                else:
-                    st.warning("Could not find a suitable convolutional layer for Grad-CAM.")
+        # ========== Step 2: Future Damage Prediction ==========
+        st.subheader("Step 2: Future Damage Prediction")
+        img_tensor = torch.tensor(np.array(img_resized_256).transpose(2, 0, 1), dtype=torch.float32).unsqueeze(0)
+        img_tensor = (img_tensor / 127.5) - 1.0
 
-                st.header("4. HSL Analysis & Damage Quantification")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.subheader("Original (HSL Adjusted)")
-                    original_hsl = adjust_hsl(original_image, hue_degrees, saturation_factor, brightness_factor)
-                    st.image(original_hsl, caption="Adjusted Input Image")
-                    percent_original = quantify_black_percentage(original_hsl)
-                    st.metric(label="Initial Damage Area (%)", value=f"{percent_original:.2f}%")
-                with col2:
-                    st.subheader("Prediction (HSL Adjusted)")
-                    predicted_hsl = adjust_hsl(predicted_image, hue_degrees, saturation_factor, brightness_factor)
-                    st.image(predicted_hsl, caption="Adjusted Predicted Image")
-                    percent_predicted = quantify_black_percentage(predicted_hsl)
-                    delta_change = percent_predicted - percent_original
-                    st.metric(
-                        label="Predicted Future Damage Area (%)",
-                        value=f"{percent_predicted:.2f}%",
-                        delta=f"{delta_change:.2f}% (Increase)"
-                    )
-                st.success("Analysis Complete!")
-    else:
-        st.info("Please upload an image to begin the analysis.")
+        with torch.no_grad():
+            pred_output = predictor(img_tensor)
+
+        pred_numpy = pred_output[0].cpu().numpy()
+        pred_numpy = (pred_numpy + 1) / 2.0 * 255.0
+        pred_numpy = pred_numpy.transpose(1, 2, 0)
+        pred_img = Image.fromarray(np.clip(pred_numpy, 0, 255).astype(np.uint8))
+        
+        st.image(pred_img, caption="Predicted Future Damage", use_container_width=True)
+
+        # ========== Step 3: Quantification ==========
+        st.subheader("Step 3: Damage Quantification")
+        hsl_input_adjusted = adjust_hsl(img_resized_256, 45, 1.5, 1.2)
+        hsl_output_adjusted = adjust_hsl(pred_img, 45, 1.5, 1.2)
+
+        damage_in = quantify_damage(hsl_input_adjusted)
+        damage_out = quantify_damage(hsl_output_adjusted)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(label="Initial Damage Score", value=f"{damage_in}%")
+            st.image(hsl_input_adjusted, caption="HSL Adjusted Input")
+        with col2:
+            delta_val = round(damage_out - damage_in, 2)
+            st.metric(label="Predicted Damage Score", value=f"{damage_out}%", delta=f"{delta_val}%")
+            st.image(hsl_output_adjusted, caption="HSL Adjusted Prediction")
+
+if __name__ == "__main__":
+    main()
