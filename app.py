@@ -15,8 +15,9 @@ import tensorflow as tf
 # CONFIG
 # =====================
 PREDICTOR_PATH = "270_net_G.pth"
-VISUALIZER_PATH = "damage_predictor.h5"  # Keras model used for Grad-CAM
-GOOGLE_DRIVE_URL = "https://drive.google.com/file/d/1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b/view?usp=sharing"
+VISUALIZER_PATH = "damage_predictor.h5"
+# Use just the ID for robust downloading
+GOOGLE_DRIVE_ID = "1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b"
 
 # =====================
 # PIX2PIX MODEL ARCHITECTURE
@@ -105,27 +106,28 @@ class UnetSkipConnectionBlock(nn.Module):
 def download_predictor_model():
     if not os.path.exists(PREDICTOR_PATH):
         with st.spinner("📥 Downloading predictor model from Google Drive..."):
-            gdown.download(f'https://drive.google.com/uc?id={GOOGLE_DRIVE_URL.split("/")[-2]}', PREDICTOR_PATH, quiet=False)
+            # Use the 'id' argument for a more reliable download
+            gdown.download(id=GOOGLE_DRIVE_ID, output=PREDICTOR_PATH, quiet=False)
         st.success("✅ Predictor model downloaded successfully!")
 
 
 @st.cache_resource
 def load_visualizer():
+    # Load Keras model without its training optimizer to prevent version errors
     if not os.path.exists(VISUALIZER_PATH):
         return None
     model = load_model(VISUALIZER_PATH, compile=False)
 
-    # --- ADD THIS PART ---
+    # --- THIS IS THE CRITICAL FIX ---
     # Build the model by calling it once with a dummy input.
     # This forces Keras to define the output shapes of all layers.
-    # The input shape must match what the model expects: (batch, height, width, channels)
     try:
         dummy_input = tf.zeros((1, 128, 128, 3))
-        _ = model(dummy_input)
+        _ = model(dummy_input) # The output is ignored.
         print("Keras visualizer model built successfully.")
     except Exception as e:
         st.warning(f"Could not build the Keras model automatically. Grad-CAM might fail. Error: {e}")
-    # --- END OF ADDED PART ---
+    # --- END OF FIX ---
 
     return model
 
@@ -170,7 +172,7 @@ def quantify_damage(img):
 
 
 # -----------------------------
-# Grad-CAM UTILITIES (Adapted from your script)
+# Grad-CAM UTILITIES
 # -----------------------------
 def preprocess_for_gradcam(pil_img, model_input_size=(128, 128)):
     """Converts a PIL image to the format needed for Grad-CAM."""
@@ -182,10 +184,7 @@ def preprocess_for_gradcam(pil_img, model_input_size=(128, 128)):
 
 def find_last_conv_layer(model):
     """Finds the name of the last convolutional layer for Grad-CAM."""
-    # Iterate backwards through the layers of the model
     for layer in reversed(model.layers):
-        # Check if the layer name contains 'conv' and it has a 4D output
-        # A more robust way to check shape is via layer.output.shape
         if 'conv' in layer.name and len(layer.output.shape) == 4:
             return layer.name
     return None
@@ -198,7 +197,7 @@ def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     )
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(image_array)
-        loss = predictions[:, 0]  # Assuming regression output
+        loss = predictions[:, 0]
 
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
@@ -250,7 +249,7 @@ def main():
     if uploaded_file:
         image = Image.open(uploaded_file).convert("RGB")
         st.subheader("📌 Uploaded Image")
-        st.image(image, use_column_width=True)
+        st.image(image, use_container_width=True) # FIX: use_container_width
 
         st.markdown("---")
 
@@ -259,22 +258,17 @@ def main():
         if visualizer is not None and last_conv_layer_name is not None:
             with st.spinner("Generating Grad-CAM visualization..."):
                 try:
-                    # Preprocess the image specifically for the Grad-CAM model (128x128)
                     original_rgb, input_tensor = preprocess_for_gradcam(image, model_input_size=(128, 128))
-                    
-                    # Generate heatmap and overlay
                     heatmap = make_gradcam_heatmap(visualizer, input_tensor, last_conv_layer_name)
                     overlay_img, heatmap_resized = overlay_heatmap(original_rgb, heatmap, alpha=gradcam_alpha)
                     
                     overlay_pil = Image.fromarray(overlay_img)
                     heatmap_vis = Image.fromarray((heatmap_resized * 255).astype(np.uint8))
 
-                    # Display side-by-side
                     col1, col2 = st.columns(2)
-                    col1.image(overlay_pil, caption="Grad-CAM Overlay", use_column_width=True)
-                    col2.image(heatmap_vis, caption="Heatmap (Grayscale)", use_column_width=True)
+                    col1.image(overlay_pil, caption="Grad-CAM Overlay", use_container_width=True) # FIX
+                    col2.image(heatmap_vis, caption="Heatmap (Grayscale)", use_container_width=True) # FIX
                     
-                    # Add a download button for the overlay
                     buf = io.BytesIO()
                     overlay_pil.save(buf, format="PNG")
                     st.download_button("⬇️ Download Grad-CAM Overlay", data=buf.getvalue(), file_name="gradcam_overlay.png", mime="image/png")
@@ -292,21 +286,20 @@ def main():
         if predictor is not None:
             with st.spinner("Predicting future damage..."):
                 try:
-                    # Preprocess for U-Net model (256x256)
                     img_resized_256 = image.resize((256, 256))
                     img_np = np.array(img_resized_256).transpose(2, 0, 1)
                     img_tensor = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0)
-                    img_tensor = (img_tensor / 127.5) - 1.0  # Normalize to [-1, 1]
+                    img_tensor = (img_tensor / 127.5) - 1.0
 
                     with torch.no_grad():
                         pred_output = predictor(img_tensor)
                     
                     pred_numpy = pred_output[0].cpu().numpy()
-                    pred_numpy = (pred_numpy + 1) / 2.0 * 255.0 # Denormalize
+                    pred_numpy = (pred_numpy + 1) / 2.0 * 255.0
                     pred_numpy = pred_numpy.transpose(1, 2, 0)
                     pred_img = Image.fromarray(np.clip(pred_numpy, 0, 255).astype(np.uint8))
                     
-                    st.image(pred_img, caption="Predicted Future Damage", use_column_width=True)
+                    st.image(pred_img, caption="Predicted Future Damage", use_container_width=True) # FIX
                 except Exception as e:
                     st.error(f"❌ Error running PyTorch predictor: {e}")
         else:
@@ -319,7 +312,6 @@ def main():
         img_for_quant = image.resize((256, 256))
         pred_img_for_quant = pred_img.resize((256, 256)) if pred_img else img_for_quant
         
-        # Apply HSL adjustments from sidebar
         hsl_input_adjusted = adjust_hsl(img_for_quant, hue_deg, sat_fac, bright_fac)
         hsl_output_adjusted = adjust_hsl(pred_img_for_quant, hue_deg, sat_fac, bright_fac)
 
@@ -330,14 +322,11 @@ def main():
         st.metric(label="Damage in Prediction (After HSL)", value=f"{damage_out}%")
         
         col_a, col_b = st.columns(2)
-        col_a.image(hsl_input_adjusted, caption="HSL Adjusted Input", use_column_width=True)
-        col_b.image(hsl_output_adjusted, caption="HSL Adjusted Prediction", use_column_width=True)
+        col_a.image(hsl_input_adjusted, caption="HSL Adjusted Input", use_container_width=True) # FIX
+        col_b.image(hsl_output_adjusted, caption="HSL Adjusted Prediction", use_container_width=True) # FIX
 
     else:
         st.info("👋 Welcome! Please upload an image to begin the analysis.")
 
 if __name__ == "__main__":
     main()
-
-
-
