@@ -111,10 +111,23 @@ def download_predictor_model():
 
 @st.cache_resource
 def load_visualizer():
-    # Load Keras model without its training optimizer to prevent version errors
     if not os.path.exists(VISUALIZER_PATH):
         return None
-    return load_model(VISUALIZER_PATH, compile=False)
+    model = load_model(VISUALIZER_PATH, compile=False)
+
+    # --- ADD THIS PART ---
+    # Build the model by calling it once with a dummy input.
+    # This forces Keras to define the output shapes of all layers.
+    # The input shape must match what the model expects: (batch, height, width, channels)
+    try:
+        dummy_input = tf.zeros((1, 128, 128, 3))
+        _ = model(dummy_input)
+        print("Keras visualizer model built successfully.")
+    except Exception as e:
+        st.warning(f"Could not build the Keras model automatically. Grad-CAM might fail. Error: {e}")
+    # --- END OF ADDED PART ---
+
+    return model
 
 
 @st.cache_resource
@@ -325,5 +338,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
