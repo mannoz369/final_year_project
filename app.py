@@ -17,7 +17,7 @@ import tensorflow as tf
 PREDICTOR_PATH = "270_net_G.pth"
 VISUALIZER_PATH = "damage_predictor.h5"
 # Use just the ID for robust downloading
-GOOGLE_DRIVE_ID = "1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b"
+GOOGLE_DRIVE_ID = "https://drive.google.com/file/d/1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b/view?usp=sharing"
 
 # =====================
 # PIX2PIX MODEL ARCHITECTURE
@@ -330,3 +330,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
