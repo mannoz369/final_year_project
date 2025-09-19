@@ -167,7 +167,7 @@ else:
                 
                 st.image(predicted_image, caption="Model Prediction Output", use_column_width=True)
 
-                # --- 3. Grad-CAM Visualization (.h5 model) ---
+              # --- 3. Grad-CAM Visualization (.h5 model) ---
                 st.header("3. Damage Area Visualization (Grad-CAM)")
                 
                 # Preprocess for TF model
@@ -177,7 +177,8 @@ else:
                 # Find last conv layer name automatically
                 last_conv_layer_name = None
                 for layer in reversed(model_tf.layers):
-                    if 'conv' in layer.name and len(layer.output_shape) == 4:
+                    # Use layer.output.shape instead of layer.output_shape
+                    if 'conv' in layer.name and len(layer.output.shape) == 4:
                         last_conv_layer_name = layer.name
                         break
                 
@@ -213,4 +214,5 @@ else:
                 st.success("Analysis Complete!")
     else:
         st.info("Please upload an image to begin the analysis.")
+
 
