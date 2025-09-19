@@ -16,7 +16,7 @@ import tensorflow as tf
 # =====================
 PREDICTOR_PATH = "270_net_G.pth"
 VISUALIZER_PATH = "damage_predictor.h5"  # Keras model used for Grad-CAM
-GOOGLE_DRIVE_URL = "https://drive.google.com/uc?id=1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b"
+GOOGLE_DRIVE_URL = "https://drive.google.com/file/d/1NTicS-PJq8vrZuClHuoryRHSs3w8x9_b/view?usp=sharing"
 
 # =====================
 # PIX2PIX MODEL ARCHITECTURE
@@ -322,3 +322,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
