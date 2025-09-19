@@ -84,6 +84,11 @@ def quantify_black_percentage(pil_image):
 # Grad-CAM functions from gradcam3.py
 def make_gradcam_heatmap(model, image_array, last_conv_layer_name):
     """Generates the Grad-CAM heatmap."""
+    
+    # By calling the model once, we trigger its build process, which allows 
+    # us to access model.inputs and model.output in the next step.
+    model(image_array)
+
     grad_model = tf.keras.models.Model(
         [model.inputs],
         [model.get_layer(last_conv_layer_name).output, model.output]
@@ -214,5 +219,6 @@ else:
                 st.success("Analysis Complete!")
     else:
         st.info("Please upload an image to begin the analysis.")
+
 
 
